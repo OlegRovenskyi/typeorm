@@ -1450,7 +1450,9 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
 
                     const tableColumn = new TableColumn();
                     tableColumn.name = dbColumn["column_name"];
-                    tableColumn.type = dbColumn["regtype"].toLowerCase();
+                    tableColumn.type = dbColumn["data_type"] === "USER-DEFINED"
+                        ? await this.checkIsEnumTypeForColumn(table, dbColumn)
+                        : dbColumn["regtype"].toLowerCase();
 
                     if (tableColumn.type === "numeric" || tableColumn.type === "decimal" || tableColumn.type === "float") {
                         // If one of these properties was set, and another was not, Postgres sets '0' in to unspecified property
@@ -1483,10 +1485,12 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
 
                     if (tableColumn.type.indexOf("enum") !== -1) {
                         tableColumn.type = "enum";
+                        const oldEnumType = await this.getEnumTypeName(table, tableColumn);
                         const sql = `SELECT "e"."enumlabel" AS "value" FROM "pg_enum" "e" ` +
                         `INNER JOIN "pg_type" "t" ON "t"."oid" = "e"."enumtypid" ` +
                         `INNER JOIN "pg_namespace" "n" ON "n"."oid" = "t"."typnamespace" ` +
-                        `WHERE "n"."nspname" = '${dbTable["table_schema"]}' AND "t"."typname" = '${this.buildEnumName(table, tableColumn.name, false, true)}'`;
+                        `WHERE "n"."nspname" = '${dbTable["table_schema"]}' AND "t"."typname" = '${ oldEnumType.enumTypeName || this.buildEnumName(table, tableColumn.name, false, true)}'`;
+
                         const results: ObjectLiteral[] = await this.query(sql);
                         tableColumn.enum = results.map(result => result["value"]);
                     }
@@ -1650,6 +1654,13 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
 
             return table;
         }));
+    }
+
+    protected async checkIsEnumTypeForColumn(table: Table, column: Partial<TableColumn>): Promise<string> {
+        const cloneColumn = JSON.parse(JSON.stringify(column));
+        cloneColumn.enumName = cloneColumn["udt_name"];
+
+        return await this.hasEnumType(table, cloneColumn) ? "enum" : cloneColumn["regtype"];
     }
 
     /**
@@ -1828,7 +1839,7 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
      */
     protected async hasEnumType(table: Table, column: TableColumn): Promise<boolean> {
         const schema = this.parseTableName(table).schema;
-        const enumName = this.buildEnumName(table, column, false, true);
+        const enumName = column.enumName || this.buildEnumName(table, column, false, true);
         const sql = `SELECT "n"."nspname", "t"."typname" FROM "pg_type" "t" ` +
             `INNER JOIN "pg_namespace" "n" ON "n"."oid" = "t"."typnamespace" ` +
             `WHERE "n"."nspname" = ${schema} AND "t"."typname" = '${enumName}'`;
